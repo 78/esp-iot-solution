@@ -102,6 +102,11 @@ esp_err_t display_manager_dummy_draw_blit(lv_display_t *disp,
 void *display_manager_dummy_draw_get_free_buf(lv_display_t *disp);
 
 /**
+ * @brief Get a free frame buffer without clearing its existing pixels
+ */
+void *display_manager_dummy_draw_get_free_buf_preserve(lv_display_t *disp);
+
+/**
  * @brief Submit a complete frame buffer in dummy draw mode
  *
  * @param disp Display handle

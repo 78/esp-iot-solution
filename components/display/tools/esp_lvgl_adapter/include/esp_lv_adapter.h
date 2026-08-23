@@ -355,6 +355,19 @@ esp_err_t esp_lv_adapter_sleep_recover(lv_display_t *disp,
 esp_err_t esp_lv_adapter_set_dummy_draw(lv_display_t *disp, bool enable);
 
 /**
+ * @brief Leave dummy draw mode without forcing a full LVGL refresh
+ *
+ * Use this only when the compositor has restored every panel framebuffer to
+ * the untransformed LVGL coordinate space. Existing LVGL invalid regions are
+ * preserved and can be rendered normally after the switch.
+ *
+ * @param[in] disp Pointer to LVGL display object
+ *
+ * @return ESP_OK on success, otherwise an ESP-IDF error code
+ */
+esp_err_t esp_lv_adapter_disable_dummy_draw_preserve_content(lv_display_t *disp);
+
+/**
  * @brief Get the current dummy draw mode state for a display
  *
  * This function retrieves whether dummy draw mode is currently enabled.
@@ -441,6 +454,23 @@ esp_err_t esp_lv_adapter_dummy_draw_blit(lv_display_t *disp,
  *        tear avoidance mode is configured (NONE or TE_SYNC)
  */
 void *esp_lv_adapter_dummy_draw_get_free_buf(lv_display_t *disp);
+
+/**
+ * @brief Get a free frame buffer while preserving its existing pixels
+ *
+ * This variant is intended for incremental full-frame compositors which know
+ * the buffer already contains the last LVGL or compositor frame. Unlike
+ * esp_lv_adapter_dummy_draw_get_free_buf(), it skips the lazy clear performed
+ * on the first acquisition after entering dummy draw mode.
+ *
+ * The caller must overwrite every region whose previous contents are not
+ * valid before submitting the buffer.
+ *
+ * @param[in] disp Pointer to LVGL display object
+ *
+ * @return A preserved writable buffer, or NULL if unavailable
+ */
+void *esp_lv_adapter_dummy_draw_get_free_buf_preserve(lv_display_t *disp);
 
 /**
  * @brief Submit a complete frame buffer to the display in dummy draw mode

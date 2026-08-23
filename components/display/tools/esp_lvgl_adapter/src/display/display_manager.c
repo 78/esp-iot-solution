@@ -383,6 +383,36 @@ void *display_manager_dummy_draw_get_free_buf(lv_display_t *disp)
     return buf;
 }
 
+void *display_manager_dummy_draw_get_free_buf_preserve(lv_display_t *disp)
+{
+    if (!disp) {
+        return NULL;
+    }
+
+    esp_lv_adapter_display_node_t *node = display_manager_find_node(disp);
+    if (!node || !node->cfg.dummy_draw_enabled || !node->bridge ||
+            !node->bridge->dummy_draw_get_free_buf) {
+        return NULL;
+    }
+
+    void *buf = node->bridge->dummy_draw_get_free_buf(node->bridge);
+    if (!buf) {
+        return NULL;
+    }
+
+    /* The incremental compositor explicitly repairs stale pixels. Mark this
+     * buffer clean so a later ordinary acquisition will not clear a frame it
+     * has already populated. */
+    for (uint8_t i = 0; i < node->cfg.frame_buffer_count &&
+            i < ESP_LV_ADAPTER_MAX_FRAME_BUFFERS; i++) {
+        if (node->cfg.frame_buffers[i] == buf) {
+            node->cfg.dummy_draw_fb_dirty_mask &= (uint8_t)~(uint8_t)(1U << i);
+            break;
+        }
+    }
+    return buf;
+}
+
 esp_err_t display_manager_dummy_draw_flush_buf(lv_display_t *disp, void *frame_buffer)
 {
     ESP_RETURN_ON_FALSE(disp, ESP_ERR_INVALID_ARG, TAG, "Display handle cannot be NULL");

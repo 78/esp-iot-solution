@@ -1177,6 +1177,30 @@ esp_err_t esp_lv_adapter_set_dummy_draw(lv_display_t *disp, bool enable)
     return ret;
 }
 
+esp_err_t esp_lv_adapter_disable_dummy_draw_preserve_content(lv_display_t *disp)
+{
+    ESP_RETURN_ON_FALSE(s_ctx.inited, ESP_ERR_INVALID_STATE, TAG, "Adapter not initialized");
+    ESP_RETURN_ON_FALSE(disp, ESP_ERR_INVALID_ARG, TAG, "Invalid display handle");
+    ESP_RETURN_ON_FALSE(xSemaphoreTakeRecursive(s_ctx.dummy_draw_mutex, portMAX_DELAY) == pdTRUE,
+                        ESP_ERR_TIMEOUT, TAG, "Failed to acquire dummy draw lock");
+
+    esp_err_t ret = esp_lv_adapter_lock((uint32_t) -1);
+    if (ret == ESP_OK) {
+        bool enabled = false;
+        ret = display_manager_get_dummy_draw_state(disp, &enabled);
+        if (ret == ESP_OK && enabled) {
+            ret = display_manager_restore_dummy_draw(disp);
+            if (ret == ESP_OK) {
+                ret = display_manager_set_dummy_draw(disp, false);
+            }
+        }
+        esp_lv_adapter_unlock();
+    }
+
+    xSemaphoreGiveRecursive(s_ctx.dummy_draw_mutex);
+    return ret;
+}
+
 bool esp_lv_adapter_get_dummy_draw_enabled(lv_display_t *disp)
 {
     if (!s_ctx.inited) {
@@ -1238,6 +1262,15 @@ void *esp_lv_adapter_dummy_draw_get_free_buf(lv_display_t *disp)
     }
 
     return display_manager_dummy_draw_get_free_buf(disp);
+}
+
+void *esp_lv_adapter_dummy_draw_get_free_buf_preserve(lv_display_t *disp)
+{
+    if (!s_ctx.inited || !disp) {
+        return NULL;
+    }
+
+    return display_manager_dummy_draw_get_free_buf_preserve(disp);
 }
 
 esp_err_t esp_lv_adapter_dummy_draw_flush_buf(lv_display_t *disp, void *frame_buffer)
