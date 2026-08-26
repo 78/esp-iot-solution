@@ -443,7 +443,7 @@ static esp_err_t adapter_auto_sleep_call_enter_callback(void)
     esp_err_t ret = s_ctx.auto_sleep.config.callbacks.on_enter_sleep(
                         s_ctx.auto_sleep.config.callbacks.user_ctx);
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Auto sleep enter callback failed (%s)", esp_err_to_name(ret));
+        ESP_LOGE(TAG, "LVGL idle-pause enter callback failed (%s)", esp_err_to_name(ret));
     }
     return ret;
 }
@@ -457,7 +457,7 @@ static esp_err_t adapter_auto_sleep_call_exit_callback(void)
     esp_err_t ret = s_ctx.auto_sleep.config.callbacks.on_exit_sleep(
                         s_ctx.auto_sleep.config.callbacks.user_ctx);
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Auto sleep exit callback failed (%s)", esp_err_to_name(ret));
+        ESP_LOGE(TAG, "LVGL idle-pause exit callback failed (%s)", esp_err_to_name(ret));
     }
     return ret;
 }
@@ -469,7 +469,7 @@ static esp_err_t adapter_auto_sleep_enter(uint32_t next_delay_ms_raw)
     }
 
     s_ctx.auto_sleep.state = ESP_LV_ADAPTER_AUTO_SLEEP_STATE_ENTERING;
-    ESP_LOGI(TAG, "Auto sleep enter requested (mode=%d, idle_timeout_ms=%" PRIu32 ")",
+    ESP_LOGD(TAG, "LVGL idle pause requested (mode=%d, idle_timeout_ms=%" PRIu32 ")",
              s_ctx.auto_sleep.config.mode, s_ctx.auto_sleep.config.idle_timeout_ms);
 
     if (s_ctx.auto_sleep.config.mode == ESP_LV_ADAPTER_AUTO_SLEEP_MODE_USER) {
@@ -481,7 +481,7 @@ static esp_err_t adapter_auto_sleep_enter(uint32_t next_delay_ms_raw)
 
     esp_err_t ret = adapter_wait_for_all_flush_done(ESP_LV_ADAPTER_AUTO_SLEEP_FLUSH_TIMEOUT_MS);
     if (ret != ESP_OK) {
-        ESP_LOGW(TAG, "Auto sleep flush wait failed (%s)", esp_err_to_name(ret));
+        ESP_LOGW(TAG, "LVGL idle-pause flush wait failed (%s)", esp_err_to_name(ret));
         s_ctx.auto_sleep.state = ESP_LV_ADAPTER_AUTO_SLEEP_STATE_ACTIVE;
         return ret;
     }
@@ -495,7 +495,7 @@ static esp_err_t adapter_auto_sleep_enter(uint32_t next_delay_ms_raw)
 
     ret = esp_lv_adapter_pause(-1);
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to pause adapter for auto sleep (%s)", esp_err_to_name(ret));
+        ESP_LOGE(TAG, "Failed to pause adapter for LVGL idle pause (%s)", esp_err_to_name(ret));
         s_ctx.auto_sleep.state = ESP_LV_ADAPTER_AUTO_SLEEP_STATE_ACTIVE;
         adapter_auto_sleep_mark_activity_internal();
         return ret;
@@ -525,7 +525,7 @@ static esp_err_t adapter_auto_sleep_enter(uint32_t next_delay_ms_raw)
     if (s_ctx.auto_sleep.wake_requested) {
         adapter_auto_sleep_notify_task();
     }
-    ESP_LOGI(TAG, "Auto sleep entered");
+    ESP_LOGD(TAG, "LVGL idle pause entered");
     return ESP_OK;
 }
 
@@ -537,7 +537,7 @@ static esp_err_t adapter_auto_sleep_exit(void)
     }
 
     s_ctx.auto_sleep.state = ESP_LV_ADAPTER_AUTO_SLEEP_STATE_WAKING;
-    ESP_LOGI(TAG, "Auto sleep wake requested");
+    ESP_LOGD(TAG, "LVGL idle-pause wake requested");
 
     esp_err_t ret = adapter_auto_sleep_pm_lock_acquire();
     if (ret != ESP_OK) {
@@ -553,7 +553,7 @@ static esp_err_t adapter_auto_sleep_exit(void)
 
     ret = esp_lv_adapter_resume();
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to resume adapter from auto sleep (%s)", esp_err_to_name(ret));
+        ESP_LOGE(TAG, "Failed to resume adapter from LVGL idle pause (%s)", esp_err_to_name(ret));
         adapter_auto_sleep_restore_sleeping_state(true);
         return ret;
     }
@@ -568,7 +568,7 @@ static esp_err_t adapter_auto_sleep_exit(void)
     s_ctx.auto_sleep.wake_requested = false;
     s_ctx.auto_sleep.state = ESP_LV_ADAPTER_AUTO_SLEEP_STATE_ACTIVE;
     adapter_auto_sleep_mark_activity_internal();
-    ESP_LOGI(TAG, "Auto sleep exited");
+    ESP_LOGD(TAG, "LVGL idle pause exited");
     return ESP_OK;
 }
 
@@ -589,7 +589,7 @@ esp_err_t esp_lv_adapter_init(const esp_lv_adapter_config_t *config)
 #endif
     if (config->auto_sleep.enable) {
         ESP_RETURN_ON_FALSE(config->auto_sleep.idle_timeout_ms > 0, ESP_ERR_INVALID_ARG,
-                            TAG, "Auto sleep timeout must be > 0");
+                            TAG, "LVGL idle-pause timeout must be > 0");
         ESP_RETURN_ON_FALSE(config->auto_sleep.mode == ESP_LV_ADAPTER_AUTO_SLEEP_MODE_PAUSE ||
                             config->auto_sleep.mode == ESP_LV_ADAPTER_AUTO_SLEEP_MODE_USER,
                             ESP_ERR_INVALID_ARG, TAG, "Invalid auto sleep mode");
@@ -645,16 +645,16 @@ esp_err_t esp_lv_adapter_init(const esp_lv_adapter_config_t *config)
 #if CONFIG_PM_ENABLE
             ret = esp_pm_lock_create(ESP_PM_NO_LIGHT_SLEEP, 0, "esp_lvgl_adapter_auto_sleep",
                                      &s_ctx.auto_sleep.pm_lock);
-            ESP_GOTO_ON_ERROR(ret, cleanup, TAG, "Auto sleep PM lock create failed (%s)", esp_err_to_name(ret));
+            ESP_GOTO_ON_ERROR(ret, cleanup, TAG, "LVGL idle-pause PM lock create failed (%s)", esp_err_to_name(ret));
             ret = adapter_auto_sleep_pm_lock_acquire();
-            ESP_GOTO_ON_ERROR(ret, cleanup, TAG, "Auto sleep PM lock acquire failed (%s)", esp_err_to_name(ret));
+            ESP_GOTO_ON_ERROR(ret, cleanup, TAG, "LVGL idle-pause PM lock acquire failed (%s)", esp_err_to_name(ret));
 #else
             ret = ESP_ERR_NOT_SUPPORTED;
-            ESP_GOTO_ON_ERROR(ret, cleanup, TAG, "Auto sleep pause mode requires CONFIG_PM_ENABLE");
+            ESP_GOTO_ON_ERROR(ret, cleanup, TAG, "LVGL idle-pause mode requires CONFIG_PM_ENABLE");
 #endif
         }
 
-        ESP_LOGI(TAG, "Auto sleep enabled (mode=%d, idle_timeout_ms=%" PRIu32 ")",
+        ESP_LOGI(TAG, "LVGL idle pause enabled (mode=%d, idle_timeout_ms=%" PRIu32 ")",
                  s_ctx.auto_sleep.config.mode, s_ctx.auto_sleep.config.idle_timeout_ms);
     } else {
         s_ctx.auto_sleep.state = ESP_LV_ADAPTER_AUTO_SLEEP_STATE_DISABLED;
@@ -881,6 +881,10 @@ esp_err_t esp_lv_adapter_pause(int32_t timeout_ms)
     }
 
     xSemaphoreTake(s_ctx.pause_done_sem, 0); /* clear pending */
+    /* The event-driven worker can otherwise be blocked until its next LVGL
+     * deadline (up to the static display refresh period). Wake it now so it
+     * can observe s_ctx.paused and acknowledge without a visible delay. */
+    xTaskNotifyGive(s_ctx.task);
     TickType_t ticks = (timeout_ms < 0) ? portMAX_DELAY : pdMS_TO_TICKS(timeout_ms);
     if (xSemaphoreTake(s_ctx.pause_done_sem, ticks) != pdTRUE) {
         s_ctx.paused = false;
@@ -974,6 +978,7 @@ esp_err_t esp_lv_adapter_sleep_prepare(void)
         return ret;
     }
 
+    int64_t prepare_started_us = esp_timer_get_time();
     ESP_LOGI(TAG, "Sleep prepare: %u displays, %u inputs",
              s_ctx.sleep_state.display_count, adapter_sleep_count_snapshot_inputs());
 
@@ -983,6 +988,7 @@ esp_err_t esp_lv_adapter_sleep_prepare(void)
         adapter_sleep_state_reset(&s_ctx.sleep_state);
         return ret;
     }
+    int64_t pause_completed_us = esp_timer_get_time();
 
     for (int i = 0; i < s_ctx.sleep_state.display_count; i++) {
         ret = display_manager_wait_flush_done(s_ctx.sleep_state.all_displays[i], 5000);
@@ -992,6 +998,7 @@ esp_err_t esp_lv_adapter_sleep_prepare(void)
             return ret;
         }
     }
+    int64_t flush_completed_us = esp_timer_get_time();
 
     for (int i = 0; i < s_ctx.sleep_state.display_count; i++) {
         esp_lv_adapter_display_node_t *detach_node = s_ctx.sleep_state.display_nodes[i];
@@ -1012,6 +1019,14 @@ esp_err_t esp_lv_adapter_sleep_prepare(void)
 
     s_ctx.sleep_state.is_sleeping = true;
 
+    int64_t prepare_completed_us = esp_timer_get_time();
+    ESP_LOGI(TAG,
+             "Sleep prepare stages: pause=%" PRIi64 " ms flush=%" PRIi64 " ms detach=%" PRIi64
+             " ms total=%" PRIi64 " ms",
+             (pause_completed_us - prepare_started_us) / 1000,
+             (flush_completed_us - pause_completed_us) / 1000,
+             (prepare_completed_us - flush_completed_us) / 1000,
+             (prepare_completed_us - prepare_started_us) / 1000);
     ESP_LOGI(TAG, "Sleep prepared successfully (%d displays detached)",
              s_ctx.sleep_state.display_count);
     ESP_LOGI(TAG, "Safe to call esp_lcd_panel_del() for each panel");
