@@ -966,6 +966,17 @@ esp_err_t esp_lv_adapter_sleep_prepare(void)
         return ESP_ERR_INVALID_STATE;
     }
 
+    esp_err_t ret;
+    if (s_ctx.paused && adapter_auto_sleep_is_pause_mode() &&
+        s_ctx.auto_sleep.state == ESP_LV_ADAPTER_AUTO_SLEEP_STATE_SLEEPING) {
+        ESP_LOGD(TAG, "Exiting LVGL idle pause before full sleep preparation");
+        ret = adapter_auto_sleep_exit();
+        if (ret != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to exit LVGL idle pause before sleep_prepare (%s)", esp_err_to_name(ret));
+            return ret;
+        }
+    }
+
     /* Check if externally paused to prevent state pollution */
     if (s_ctx.paused) {
         ESP_LOGE(TAG, "Cannot sleep_prepare while externally paused. "
@@ -973,7 +984,7 @@ esp_err_t esp_lv_adapter_sleep_prepare(void)
         return ESP_ERR_INVALID_STATE;
     }
 
-    esp_err_t ret = adapter_sleep_snapshot_displays();
+    ret = adapter_sleep_snapshot_displays();
     if (ret != ESP_OK) {
         return ret;
     }

@@ -626,6 +626,10 @@ ESP_ERROR_CHECK(esp_lv_adapter_init(&cfg));
 3. 提供只负责面板或背光状态切换的回调
 4. 已注册的触摸/按键/旋钮输入会自动通知适配器；对于自定义唤醒源，调用 `esp_lv_adapter_request_wake()` 或 `esp_lv_adapter_request_wake_from_isr()`
 
+如果板级完整睡眠开始时适配器正处于该 idle pause，
+`esp_lv_adapter_sleep_prepare()` 会先退出适配器自身的 pause，再开始显示设备分离流程。
+手动调用的 `esp_lv_adapter_pause()` 仍必须先用 `esp_lv_adapter_resume()` 配对，才能准备完整睡眠。
+
 **使用自动睡眠 User 模式：**
 
 1. 配置 `cfg.auto_sleep.mode = ESP_LV_ADAPTER_AUTO_SLEEP_MODE_USER`

@@ -20,3 +20,8 @@ The fork also adds `ESP_LV_ADAPTER_TICK_MODE_MONOTONIC` for LVGL 9 products.
 This mode uses LVGL's tick callback to read the ESP-IDF monotonic clock on
 demand, eliminating the adapter's periodic tick timer. The worker separately
 bounds its dynamic LVGL deadline by the auto-sleep entry deadline.
+
+The full display sleep flow can also start while pause-mode auto sleep is
+active. `esp_lv_adapter_sleep_prepare()` first exits the adapter-owned idle
+pause, restoring its PM lock and display bridge guard, and then performs the
+normal detach sequence. A caller-owned manual pause remains an invalid state.

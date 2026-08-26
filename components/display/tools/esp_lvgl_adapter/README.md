@@ -632,6 +632,11 @@ ESP_ERROR_CHECK(esp_lv_adapter_init(&cfg));
 3. Provide callbacks that only manage panel or backlight state
 4. Registered touch/button/knob inputs automatically notify the adapter on activity; for custom wake sources call `esp_lv_adapter_request_wake()` or `esp_lv_adapter_request_wake_from_isr()`
 
+If a board-managed full sleep begins while the adapter is in this idle pause,
+`esp_lv_adapter_sleep_prepare()` exits the adapter-owned pause before starting
+the display detach sequence. A manual `esp_lv_adapter_pause()` must still be
+paired with `esp_lv_adapter_resume()` before full sleep preparation.
+
 **Using Auto Sleep User Mode:**
 
 1. Configure `cfg.auto_sleep.mode = ESP_LV_ADAPTER_AUTO_SLEEP_MODE_USER`

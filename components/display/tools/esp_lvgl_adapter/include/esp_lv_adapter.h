@@ -309,6 +309,8 @@ esp_err_t esp_lv_adapter_resume(void);
  *
  * @note This function automatically pauses the LVGL worker and waits for all
  *       pending flush operations to complete.
+ * @note If pause-mode auto sleep is active, this function first exits that
+ *       idle pause and then continues with the full display sleep sequence.
  * @note After calling this function, you can safely call esp_lcd_panel_del()
  *       for each display's panel handle.
  * @note Touch inputs remain registered. If you need to power down touch hardware,
