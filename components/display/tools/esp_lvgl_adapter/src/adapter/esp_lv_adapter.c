@@ -48,6 +48,7 @@ static esp_err_t adapter_stop_tick_timer(void);
 static esp_err_t adapter_start_tick_timer(void);
 static esp_err_t adapter_auto_sleep_enter(uint32_t next_delay_ms_raw);
 static esp_err_t adapter_auto_sleep_exit(void);
+static uint32_t adapter_auto_sleep_next_check_ms(void);
 
 #define ESP_LV_ADAPTER_AUTO_SLEEP_FLUSH_TIMEOUT_MS 5000
 
@@ -415,6 +416,24 @@ static bool adapter_auto_sleep_should_enter(uint32_t next_delay_ms_raw)
     return elapsed_us >= ((int64_t)idle_timeout_ms * 1000);
 }
 
+static uint32_t adapter_auto_sleep_next_check_ms(void)
+{
+    if (!adapter_auto_sleep_is_enabled() ||
+            s_ctx.auto_sleep.state != ESP_LV_ADAPTER_AUTO_SLEEP_STATE_ACTIVE ||
+            s_ctx.paused || s_ctx.sleep_state.is_sleeping || s_ctx.auto_sleep.activity_pending) {
+        return UINT32_MAX;
+    }
+
+    int64_t timeout_us = (int64_t)s_ctx.auto_sleep.config.idle_timeout_ms * 1000;
+    int64_t elapsed_us = esp_timer_get_time() - s_ctx.auto_sleep.last_activity_us;
+    int64_t remaining_us = timeout_us - elapsed_us;
+    if (remaining_us <= 0) {
+        return 0;
+    }
+
+    return (uint32_t)((remaining_us + 999) / 1000);
+}
+
 static esp_err_t adapter_auto_sleep_call_enter_callback(void)
 {
     if (!s_ctx.auto_sleep.config.callbacks.on_enter_sleep) {
@@ -557,6 +576,17 @@ esp_err_t esp_lv_adapter_init(const esp_lv_adapter_config_t *config)
 {
     ESP_RETURN_ON_FALSE(!s_ctx.inited, ESP_ERR_INVALID_STATE, TAG, "Adapter already initialized");
     ESP_RETURN_ON_FALSE(config, ESP_ERR_INVALID_ARG, TAG, "Invalid adapter configuration");
+    ESP_RETURN_ON_FALSE(config->tick_mode == ESP_LV_ADAPTER_TICK_MODE_PERIODIC ||
+                        config->tick_mode == ESP_LV_ADAPTER_TICK_MODE_MONOTONIC,
+                        ESP_ERR_INVALID_ARG, TAG, "Invalid LVGL tick mode");
+    if (config->tick_mode == ESP_LV_ADAPTER_TICK_MODE_PERIODIC) {
+        ESP_RETURN_ON_FALSE(config->tick_period_ms > 0, ESP_ERR_INVALID_ARG, TAG,
+                            "Periodic LVGL tick period must be > 0");
+    }
+#if LVGL_VERSION_MAJOR < 9
+    ESP_RETURN_ON_FALSE(config->tick_mode != ESP_LV_ADAPTER_TICK_MODE_MONOTONIC,
+                        ESP_ERR_NOT_SUPPORTED, TAG, "Monotonic LVGL tick mode requires LVGL 9+");
+#endif
     if (config->auto_sleep.enable) {
         ESP_RETURN_ON_FALSE(config->auto_sleep.idle_timeout_ms > 0, ESP_ERR_INVALID_ARG,
                             TAG, "Auto sleep timeout must be > 0");
@@ -593,7 +623,7 @@ esp_err_t esp_lv_adapter_init(const esp_lv_adapter_config_t *config)
     ESP_LOGI(TAG, "Decoder initialized successfully");
 #endif
 
-    /* Initialize LVGL tick timer */
+    /* Initialize the selected LVGL tick source */
     ret = tick_init();
     ESP_GOTO_ON_ERROR(ret, cleanup, TAG, "Tick init failed (%d)", ret);
 
@@ -784,8 +814,8 @@ esp_err_t esp_lv_adapter_request_wake(void)
     adapter_auto_sleep_mark_activity_internal();
     if (adapter_auto_sleep_should_latch_wake_request()) {
         s_ctx.auto_sleep.wake_requested = true;
-        adapter_auto_sleep_notify_task();
     }
+    adapter_auto_sleep_notify_task();
 
     return ESP_OK;
 }
@@ -799,8 +829,8 @@ void esp_lv_adapter_request_wake_from_isr(void)
     s_ctx.auto_sleep.activity_pending = true;
     if (adapter_auto_sleep_should_latch_wake_request()) {
         s_ctx.auto_sleep.wake_requested = true;
-        adapter_auto_sleep_notify_task_from_isr();
     }
+    adapter_auto_sleep_notify_task_from_isr();
 }
 
 esp_err_t esp_lv_adapter_refresh_now(lv_display_t *disp)
@@ -1705,6 +1735,10 @@ static void lvgl_worker(void *arg)
         }
 
         task_delay_ms = next_delay_ms_raw;
+        uint32_t auto_sleep_delay_ms = adapter_auto_sleep_next_check_ms();
+        if (auto_sleep_delay_ms < task_delay_ms) {
+            task_delay_ms = auto_sleep_delay_ms;
+        }
 
         /* Clamp delay to configured range */
         if (task_delay_ms > s_ctx.config.task_max_delay_ms) {
@@ -1734,13 +1768,30 @@ static void tick_increment(void *arg)
     lv_tick_inc(tick_period_ms);
 }
 
+#if LVGL_VERSION_MAJOR >= 9
+static uint32_t tick_get_monotonic(void)
+{
+    return (uint32_t)(esp_timer_get_time() / 1000);
+}
+#endif
+
 /**
- * @brief Initialize LVGL tick timer
+ * @brief Initialize the configured LVGL tick source
  *
- * Creates and starts a periodic timer for LVGL tick updates
+ * Uses either an on-demand monotonic callback or a periodic timer.
  */
 static esp_err_t tick_init(void)
 {
+    if (s_ctx.config.tick_mode == ESP_LV_ADAPTER_TICK_MODE_MONOTONIC) {
+#if LVGL_VERSION_MAJOR >= 9
+        lv_tick_set_cb(tick_get_monotonic);
+        ESP_LOGI(TAG, "LVGL tick uses the on-demand esp_timer monotonic clock");
+        return ESP_OK;
+#else
+        return ESP_ERR_NOT_SUPPORTED;
+#endif
+    }
+
     uint32_t tick_period_ms = s_ctx.config.tick_period_ms;
 
     const esp_timer_create_args_t lvgl_tick_timer_args = {

@@ -34,6 +34,14 @@ typedef enum {
 } esp_lv_adapter_auto_sleep_mode_t;
 
 /**
+ * @brief LVGL tick source
+ */
+typedef enum {
+    ESP_LV_ADAPTER_TICK_MODE_PERIODIC = 0, /*!< Periodically call lv_tick_inc() from an esp_timer */
+    ESP_LV_ADAPTER_TICK_MODE_MONOTONIC,    /*!< Read esp_timer_get_time() on demand (LVGL 9+) */
+} esp_lv_adapter_tick_mode_t;
+
+/**
  * @brief Auto sleep callback collection
  *
  * The adapter never calls LCD or panel power-management APIs directly.
@@ -89,6 +97,7 @@ typedef struct {
     uint32_t task_priority;         /*!< LVGL task priority */
     int task_core_id;               /*!< LVGL task core ID (-1 for no affinity) */
     uint32_t tick_period_ms;        /*!< LVGL tick period in milliseconds */
+    esp_lv_adapter_tick_mode_t tick_mode; /*!< LVGL tick source selection */
     uint32_t task_min_delay_ms;     /*!< Minimum LVGL task delay in milliseconds */
     uint32_t task_max_delay_ms;     /*!< Maximum LVGL task delay in milliseconds */
     bool stack_in_psram;            /*!< Allocate LVGL task stack in PSRAM when available */
@@ -116,6 +125,7 @@ typedef struct {
     .task_priority     = ESP_LV_ADAPTER_DEFAULT_TASK_PRIORITY,       \
     .task_core_id      = ESP_LV_ADAPTER_DEFAULT_TASK_CORE_ID,        \
     .tick_period_ms    = ESP_LV_ADAPTER_DEFAULT_TICK_PERIOD_MS,      \
+    .tick_mode         = ESP_LV_ADAPTER_TICK_MODE_PERIODIC,          \
     .task_min_delay_ms = ESP_LV_ADAPTER_DEFAULT_TASK_MIN_DELAY_MS,   \
     .task_max_delay_ms = ESP_LV_ADAPTER_DEFAULT_TASK_MAX_DELAY_MS,   \
     .stack_in_psram    = false,                                      \

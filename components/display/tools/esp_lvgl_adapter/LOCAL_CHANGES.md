@@ -15,3 +15,8 @@ MetalioClaw adds two framebuffer-preserving APIs used by
 These APIs are safe only when the caller tracks and restores every panel
 framebuffer's contents. The regular adapter APIs remain the fallback for an
 incomplete restore.
+
+The fork also adds `ESP_LV_ADAPTER_TICK_MODE_MONOTONIC` for LVGL 9 products.
+This mode uses LVGL's tick callback to read the ESP-IDF monotonic clock on
+demand, eliminating the adapter's periodic tick timer. The worker separately
+bounds its dynamic LVGL deadline by the auto-sleep entry deadline.

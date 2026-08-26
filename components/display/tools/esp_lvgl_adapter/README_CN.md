@@ -568,6 +568,18 @@ ESP_ERROR_CHECK(esp_lv_adapter_set_area_rounder_cb(disp, NULL, NULL));
 - 应用负责 LCD、背光、触摸供电和板级唤醒源的具体控制
 - 适配器不会主动调用 `esp_lcd_panel_disp_sleep()`、`esp_lcd_panel_disp_on_off()` 或板级 LCD deinit/reinit 接口
 
+对于已经提供显式唤醒通知的 LVGL 9 应用，可以取消适配器的周期 tick timer，让 LVGL 按需读取 ESP-IDF
+单调时钟：
+
+```c
+esp_lv_adapter_config_t cfg = ESP_LV_ADAPTER_DEFAULT_CONFIG();
+cfg.tick_mode = ESP_LV_ADAPTER_TICK_MODE_MONOTONIC;
+cfg.task_max_delay_ms = 120000;
+```
+
+worker 仍会在 `lv_timer_handler()` 返回的下一个 deadline、自动睡眠 deadline 或
+`esp_lv_adapter_request_wake()` 显式通知时唤醒。periodic 模式仍为默认值，也是 LVGL 8 必须使用的模式。
+
 **手动完整睡眠流程：**
 
 ```c

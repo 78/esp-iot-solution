@@ -192,7 +192,8 @@ static void test_init_display(void)
 
     TEST_ESP_OK(hw_lcd_init(&panel, &io, tear_avoid_mode, rotation));
 
-    const esp_lv_adapter_config_t adapter_config = ESP_LV_ADAPTER_DEFAULT_CONFIG();
+    esp_lv_adapter_config_t adapter_config = ESP_LV_ADAPTER_DEFAULT_CONFIG();
+    adapter_config.tick_mode = ESP_LV_ADAPTER_TICK_MODE_MONOTONIC;
     TEST_ESP_OK(esp_lv_adapter_init(&adapter_config));
 
 #if CONFIG_EXAMPLE_LCD_INTERFACE_MIPI_DSI

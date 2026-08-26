@@ -574,6 +574,18 @@ The adapter boundary is intentionally narrow:
 - The application decides what to do with the LCD, backlight, touch power, and board-specific wake sources.
 - The adapter does not call `esp_lcd_panel_disp_sleep()`, `esp_lcd_panel_disp_on_off()`, or board LCD deinit/reinit APIs for you.
 
+For LVGL 9 applications that provide explicit wake notifications, the adapter can avoid its periodic tick timer and
+let LVGL read ESP-IDF's monotonic clock on demand:
+
+```c
+esp_lv_adapter_config_t cfg = ESP_LV_ADAPTER_DEFAULT_CONFIG();
+cfg.tick_mode = ESP_LV_ADAPTER_TICK_MODE_MONOTONIC;
+cfg.task_max_delay_ms = 120000;
+```
+
+The worker still wakes at the next `lv_timer_handler()` deadline, the auto-sleep idle deadline, or an explicit
+`esp_lv_adapter_request_wake()` notification. Periodic mode remains the default and is required by LVGL 8.
+
 **Manual Full Sleep Flow:**
 
 ```c

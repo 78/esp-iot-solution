@@ -1,5 +1,13 @@
 # ChangeLog
 
+## v0.6.4 (2026-08-26)
+
+* Add an LVGL 9 monotonic tick mode that reads `esp_timer_get_time()` on demand instead of creating a periodic
+  `esp_timer` for `lv_tick_inc()`.
+* Bound the LVGL worker wait by the remaining auto-sleep idle deadline, allowing applications to raise
+  `task_max_delay_ms` without delaying pause-mode entry.
+* Make explicit wake requests notify the worker in active state as well as during auto-sleep transitions.
+
 ## v0.6.3 (2026-07-17)
 
 * Optimize LVGL v8/v9 partial framebuffer repair for double/triple-buffer tear-avoid modes:
