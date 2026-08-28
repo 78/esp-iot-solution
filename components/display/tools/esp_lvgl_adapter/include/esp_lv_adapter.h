@@ -36,6 +36,7 @@ typedef enum {
 /**
  * @brief LVGL tick source
  */
+#define ESP_LV_ADAPTER_HAS_TICK_MODE 1
 typedef enum {
     ESP_LV_ADAPTER_TICK_MODE_PERIODIC = 0, /*!< Periodically call lv_tick_inc() from an esp_timer */
     ESP_LV_ADAPTER_TICK_MODE_MONOTONIC,    /*!< Read esp_timer_get_time() on demand (LVGL 9+) */
@@ -377,6 +378,7 @@ esp_err_t esp_lv_adapter_set_dummy_draw(lv_display_t *disp, bool enable);
  *
  * @return ESP_OK on success, otherwise an ESP-IDF error code
  */
+#define ESP_LV_ADAPTER_HAS_DISABLE_DUMMY_DRAW_PRESERVE_CONTENT 1
 esp_err_t esp_lv_adapter_disable_dummy_draw_preserve_content(lv_display_t *disp);
 
 /**
