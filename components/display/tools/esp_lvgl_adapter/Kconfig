@@ -78,6 +78,16 @@ config ESP_LVGL_ADAPTER_ENABLE_FPS_STATS
         When enabled, you can use esp_lv_adapter_fps_* APIs to get real-time FPS.
         Performance overhead is negligible (< 2 microseconds per frame).
 
+config ESP_LVGL_ADAPTER_ENABLE_PERFORMANCE_TELEMETRY
+    bool "Enable aggregated display-path performance telemetry"
+    default n
+    help
+        Collect operation counts, pixels and elapsed time for RGB888 software
+        image spans, front-to-back framebuffer synchronization, panel submits
+        and double-buffer VSYNC waits. The counters are intended for temporary
+        performance investigations and are disabled by default so production
+        builds pay no timing or counter-update overhead.
+
 config ESP_LVGL_ADAPTER_ENABLE_BUTTON
     bool "Enable button input support"
     default n

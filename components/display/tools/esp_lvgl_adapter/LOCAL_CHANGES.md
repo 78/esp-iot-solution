@@ -25,3 +25,7 @@ The full display sleep flow can also start while pause-mode auto sleep is
 active. `esp_lv_adapter_sleep_prepare()` first exits the adapter-owned idle
 pause, restoring its PM lock and display bridge guard, and then performs the
 normal detach sequence. A caller-owned manual pause remains an invalid state.
+
+Optional `CONFIG_ESP_LVGL_ADAPTER_ENABLE_PERFORMANCE_TELEMETRY` counters expose
+aggregated RGB888 software-image, framebuffer-sync, panel-submit and VSYNC-wait
+costs. The option defaults off and adds no timing calls to production builds.

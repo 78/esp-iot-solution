@@ -15,6 +15,7 @@
 
 #include "display_bridge.h"
 #include "display_manager.h"
+#include "display_performance_telemetry.h"
 #include "display_te_sync.h"
 #include "esp_cache.h"
 #include "esp_check.h"
@@ -772,13 +773,25 @@ static esp_err_t display_bridge_v9_submit_double_buffer(esp_lv_adapter_display_b
     }
 
     uint32_t submitted_switch_seq = display_bridge_v9_prepare_double_wait(impl);
+#if CONFIG_ESP_LVGL_ADAPTER_ENABLE_PERFORMANCE_TELEMETRY
+    int64_t submit_started_us = esp_timer_get_time();
+#endif
     esp_err_t ret = display_bridge_v9_blit_full_frame(impl, frame_buffer, true);
+#if CONFIG_ESP_LVGL_ADAPTER_ENABLE_PERFORMANCE_TELEMETRY
+    display_performance_telemetry_record_panel_submit((uint64_t)(esp_timer_get_time() - submit_started_us));
+#endif
     if (ret != ESP_OK) {
         return ret;
     }
 
     if (display_bridge_v9_arm_double_wait_after_submit(impl, submitted_switch_seq)) {
+#if CONFIG_ESP_LVGL_ADAPTER_ENABLE_PERFORMANCE_TELEMETRY
+        int64_t wait_started_us = esp_timer_get_time();
+#endif
         display_bridge_v9_wait_double_ready(impl);
+#if CONFIG_ESP_LVGL_ADAPTER_ENABLE_PERFORMANCE_TELEMETRY
+        display_performance_telemetry_record_panel_vsync_wait((uint64_t)(esp_timer_get_time() - wait_started_us));
+#endif
     }
     return ESP_OK;
 }
@@ -2913,7 +2926,14 @@ static void copy_diff_repair_from_front_to_back(esp_lv_adapter_display_bridge_v9
                 DMA2D_PIXEL_FORMAT_FIELD(color_bytes),
             };
 #endif
+#if CONFIG_ESP_LVGL_ADAPTER_ENABLE_PERFORMANCE_TELEMETRY
+            int64_t copy_started_us = esp_timer_get_time();
+#endif
             ESP_ERROR_CHECK(display_bridge_dma2d_copy_sync(&transfer, portMAX_DELAY));
+#if CONFIG_ESP_LVGL_ADAPTER_ENABLE_PERFORMANCE_TELEMETRY
+            esp_lv_adapter_display_telemetry_record_framebuffer_dma2d(
+                (uint64_t)copy_w_px * copy_h_px, (uint64_t)(esp_timer_get_time() - copy_started_us));
+#endif
             continue;
         }
 #endif
@@ -3161,7 +3181,14 @@ static void copy_unrendered_area_from_front_to_back(lv_display_t* disp_refr, esp
 #endif
 
             /* submit and wait */
+#if CONFIG_ESP_LVGL_ADAPTER_ENABLE_PERFORMANCE_TELEMETRY
+            int64_t copy_started_us = esp_timer_get_time();
+#endif
             ESP_ERROR_CHECK(display_bridge_dma2d_copy_sync(&tr, portMAX_DELAY));
+#if CONFIG_ESP_LVGL_ADAPTER_ENABLE_PERFORMANCE_TELEMETRY
+            esp_lv_adapter_display_telemetry_record_framebuffer_dma2d(
+                (uint64_t)copy_w_px * copy_h_px, (uint64_t)(esp_timer_get_time() - copy_started_us));
+#endif
         } else {
             const int bytes_per_pixel = color_bytes;
             int bytes_per_line = copy_w_px * bytes_per_pixel;

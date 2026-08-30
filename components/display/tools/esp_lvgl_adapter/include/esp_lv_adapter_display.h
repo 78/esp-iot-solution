@@ -454,6 +454,44 @@ bool esp_lv_adapter_display_notify_frame_done_from_isr(lv_display_t *disp);
  */
 bool esp_lv_adapter_display_notify_frame_buf_complete_from_isr(lv_display_t *disp);
 
+/**
+ * @brief Aggregated display-path counters for performance investigations.
+ *
+ * Counters are collected only when
+ * CONFIG_ESP_LVGL_ADAPTER_ENABLE_PERFORMANCE_TELEMETRY is enabled. They cover
+ * adapter-wide work and are not attributed to a particular LVGL object.
+ */
+typedef struct {
+    uint64_t software_image_calls;
+    uint64_t software_image_pixels;
+    uint64_t software_image_elapsed_us;
+    uint64_t framebuffer_dma2d_calls;
+    uint64_t framebuffer_dma2d_pixels;
+    uint64_t framebuffer_dma2d_elapsed_us;
+    uint64_t panel_submit_calls;
+    uint64_t panel_submit_elapsed_us;
+    uint64_t panel_vsync_wait_calls;
+    uint64_t panel_vsync_wait_elapsed_us;
+} esp_lv_adapter_display_telemetry_t;
+
+/**
+ * @brief Atomically take and reset aggregated display-path telemetry.
+ *
+ * @param[out] telemetry Destination for the counters.
+ * @return true when telemetry is compiled in, false when it is disabled or
+ *         telemetry is NULL.
+ */
+bool esp_lv_adapter_display_telemetry_take(esp_lv_adapter_display_telemetry_t *telemetry);
+
+/**
+ * @brief Record one platform-provided front-to-back DMA2D copy.
+ *
+ * Display integrations that install their own LVGL draw-buffer copy callback
+ * can use this to contribute to the same aggregate as adapter-owned copies.
+ * The function is a no-op when performance telemetry is disabled.
+ */
+void esp_lv_adapter_display_telemetry_record_framebuffer_dma2d(uint64_t pixels, uint64_t elapsed_us);
+
 #ifdef __cplusplus
 }
 #endif

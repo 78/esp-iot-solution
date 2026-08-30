@@ -12,7 +12,9 @@
 #if CONFIG_SOC_PPA_SUPPORTED
 
 #include "lvgl_port_alignment.h"
+#include "display_performance_telemetry.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "lvgl.h"
 #include "lvgl_private.h"
 #include "src/draw/sw/blend/lv_draw_sw_blend.h"
@@ -369,7 +371,7 @@ static void lv_draw_ppa_v9_handler(lv_draw_task_t *t, const lv_draw_sw_blend_dsc
     }
 
     /* Small areas: DMA setup overhead exceeds benefit */
-    if (lv_area_get_size(&block_area) <= 100) {
+    if (lv_area_get_size(&block_area) < 100) {
         lv_draw_ppa_v9_sw_fallback(t, dsc);
         return;
     }
@@ -558,7 +560,15 @@ static void lv_draw_ppa_v9_sw_fallback_rgb888(lv_draw_task_t *t, const lv_draw_s
     image_dsc.dest_buf = lv_draw_layer_go_to_xy(layer,
                                                 blend_area.x1 - layer->buf_area.x1,
                                                 blend_area.y1 - layer->buf_area.y1);
+#if CONFIG_ESP_LVGL_ADAPTER_ENABLE_PERFORMANCE_TELEMETRY
+    int64_t started_us = esp_timer_get_time();
+#endif
     lv_draw_sw_blend_image_to_rgb888(&image_dsc, 3);
+#if CONFIG_ESP_LVGL_ADAPTER_ENABLE_PERFORMANCE_TELEMETRY
+    display_performance_telemetry_record_software_image(
+        (uint64_t)lv_area_get_width(&blend_area) * lv_area_get_height(&blend_area),
+        (uint64_t)(esp_timer_get_time() - started_us));
+#endif
 }
 
 /*
@@ -586,7 +596,7 @@ static void lv_draw_ppa_v9_handler_rgb888(lv_draw_task_t *t, const lv_draw_sw_bl
         return;
     }
 
-    if (lv_area_get_size(&block_area) <= 100) {
+    if (lv_area_get_size(&block_area) < 100) {
         lv_draw_ppa_v9_sw_fallback_rgb888(t, dsc);
         return;
     }
