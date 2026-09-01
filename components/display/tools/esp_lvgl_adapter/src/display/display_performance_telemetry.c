@@ -33,9 +33,10 @@ void esp_lv_adapter_display_telemetry_record_framebuffer_dma2d(uint64_t pixels, 
     portEXIT_CRITICAL(&s_telemetry_lock);
 }
 
-void display_performance_telemetry_record_panel_submit(uint64_t elapsed_us) {
+void display_performance_telemetry_record_panel_submit(uint64_t bytes, uint64_t elapsed_us) {
     portENTER_CRITICAL(&s_telemetry_lock);
     s_telemetry.panel_submit_calls++;
+    s_telemetry.panel_submit_bytes += bytes;
     s_telemetry.panel_submit_elapsed_us += elapsed_us;
     portEXIT_CRITICAL(&s_telemetry_lock);
 }
@@ -44,6 +45,14 @@ void display_performance_telemetry_record_panel_vsync_wait(uint64_t elapsed_us) 
     portENTER_CRITICAL(&s_telemetry_lock);
     s_telemetry.panel_vsync_wait_calls++;
     s_telemetry.panel_vsync_wait_elapsed_us += elapsed_us;
+    portEXIT_CRITICAL(&s_telemetry_lock);
+}
+
+void display_performance_telemetry_record_rgb565_wire_cpu(uint64_t pixels, uint64_t elapsed_us) {
+    portENTER_CRITICAL(&s_telemetry_lock);
+    s_telemetry.rgb565_wire_cpu_count++;
+    s_telemetry.rgb565_wire_cpu_pixels += pixels;
+    s_telemetry.rgb565_wire_cpu_us += elapsed_us;
     portEXIT_CRITICAL(&s_telemetry_lock);
 }
 #else
@@ -57,9 +66,17 @@ void esp_lv_adapter_display_telemetry_record_framebuffer_dma2d(uint64_t pixels, 
     (void)elapsed_us;
 }
 
-void display_performance_telemetry_record_panel_submit(uint64_t elapsed_us) { (void)elapsed_us; }
+void display_performance_telemetry_record_panel_submit(uint64_t bytes, uint64_t elapsed_us) {
+    (void)bytes;
+    (void)elapsed_us;
+}
 
 void display_performance_telemetry_record_panel_vsync_wait(uint64_t elapsed_us) { (void)elapsed_us; }
+
+void display_performance_telemetry_record_rgb565_wire_cpu(uint64_t pixels, uint64_t elapsed_us) {
+    (void)pixels;
+    (void)elapsed_us;
+}
 #endif
 
 bool esp_lv_adapter_display_telemetry_take(esp_lv_adapter_display_telemetry_t* telemetry) {

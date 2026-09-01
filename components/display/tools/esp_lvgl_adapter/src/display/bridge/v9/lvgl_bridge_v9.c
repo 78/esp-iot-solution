@@ -143,10 +143,8 @@ typedef struct esp_lv_adapter_display_bridge_v9 {
     esp_lv_adapter_vsync_timing_t vsync_timing; /*!< Standardized VSYNC timing context */
     bool idf_callbacks_registered;
     bool idf_callback_registration_enabled;
-#if CONFIG_SOC_PPA_SUPPORTED
-    void* rgb565_wire_buffer; /**< PPA-packed RGB565 for big-endian panel transports */
+    void* rgb565_wire_buffer; /**< Packed RGB565 for big-endian panel transports */
     size_t rgb565_wire_buffer_size;
-#endif
 
     /* --- Pipeline buffer management (owned by bridge, inited by display_bridge_pipeline_init_from_cfg) --- */
     esp_lv_adapter_display_pipeline_t pipeline;
@@ -193,10 +191,23 @@ static inline uint8_t bridge_color_bytes(const esp_lv_adapter_display_bridge_v9_
     return impl->runtime.color_bytes;
 }
 
-#if CONFIG_SOC_PPA_SUPPORTED
 static bool display_bridge_v9_uses_rgb565_wire_buffer(const esp_lv_adapter_display_bridge_v9_t* impl) {
-    return impl->cfg.base.profile.interface == ESP_LV_ADAPTER_PANEL_IF_OTHER &&
-           bridge_color_bytes(impl) == COLOR_BYTES_RGB565;
+    if (impl->cfg.base.profile.interface != ESP_LV_ADAPTER_PANEL_IF_OTHER ||
+        bridge_color_bytes(impl) != COLOR_BYTES_RGB565) {
+        return false;
+    }
+#if CONFIG_SOC_PPA_SUPPORTED
+    return true;
+#elif SOC_PSRAM_DMA_CAPABLE
+    /*
+     * ESP32-S3 can DMA SPI LCD payloads directly from PSRAM. Keep PSRAM draw
+     * buffers as the transport buffers and swap RGB565 bytes in place instead
+     * of reserving a second, panel-strip-sized block in internal SRAM.
+     */
+    return !impl->cfg.base.profile.use_psram;
+#else
+    return true;
+#endif
 }
 
 static bool display_bridge_v9_init_rgb565_wire_buffer(esp_lv_adapter_display_bridge_v9_t* impl) {
@@ -207,30 +218,65 @@ static bool display_bridge_v9_init_rgb565_wire_buffer(esp_lv_adapter_display_bri
         return true;
     }
 
-    size_t bytes = impl->runtime.frame_buffer_size;
-    if (bytes == 0 || bytes > SIZE_MAX - (PPA_DEFAULT_ALIGNMENT - 1)) {
+    size_t bytes;
+    size_t alignment;
+    uint32_t capabilities;
+#if CONFIG_SOC_PPA_SUPPORTED
+    bytes = impl->runtime.frame_buffer_size;
+    alignment = PPA_DEFAULT_ALIGNMENT;
+    capabilities = MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT;
+#else
+    bytes = impl->cfg.draw_buf_pixels;
+    if (bytes > SIZE_MAX / COLOR_BYTES_RGB565) {
         return false;
     }
-    bytes = (bytes + PPA_DEFAULT_ALIGNMENT - 1) / PPA_DEFAULT_ALIGNMENT * PPA_DEFAULT_ALIGNMENT;
-    impl->rgb565_wire_buffer =
-        heap_caps_aligned_alloc(PPA_DEFAULT_ALIGNMENT, bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    bytes *= COLOR_BYTES_RGB565;
+    alignment = 64U;
+    capabilities = MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA | MALLOC_CAP_8BIT;
+#endif
+    if (bytes == 0 || bytes > SIZE_MAX - (alignment - 1U)) {
+        return false;
+    }
+    bytes = (bytes + alignment - 1U) / alignment * alignment;
+    impl->rgb565_wire_buffer = heap_caps_aligned_alloc(alignment, bytes, capabilities);
     if (!impl->rgb565_wire_buffer) {
-        ESP_LOGE(TAG, "alloc RGB565 PPA wire buffer failed: bytes=%zu", bytes);
+        ESP_LOGE(TAG, "alloc RGB565 wire buffer failed: bytes=%zu caps=0x%" PRIx32, bytes, capabilities);
         return false;
     }
     impl->rgb565_wire_buffer_size = bytes;
+#if CONFIG_SOC_PPA_SUPPORTED
     ESP_LOGI(TAG, "RGB565 panel byte packing: PPA 1:1 buffer=%zu bytes", bytes);
+#else
+    ESP_LOGI(TAG, "RGB565 panel byte packing: CPU internal-DMA stage=%zu bytes", bytes);
+#endif
     return true;
 }
 
 static uint8_t* display_bridge_v9_pack_rgb565_wire(esp_lv_adapter_display_bridge_v9_t* impl, const uint8_t* source,
                                                    uint32_t width, uint32_t height) {
-    if (!source || !impl->rgb565_wire_buffer || !hw_resource.ppa_handle || width == 0 || height == 0 ||
-        width > SIZE_MAX / height / COLOR_BYTES_RGB565 ||
-        (size_t)width * height * COLOR_BYTES_RGB565 > impl->rgb565_wire_buffer_size) {
+    if (!source || width == 0 || height == 0 || width > SIZE_MAX / height / COLOR_BYTES_RGB565) {
         return NULL;
     }
 
+    const size_t pixels = (size_t)width * height;
+
+#if !CONFIG_SOC_PPA_SUPPORTED && SOC_PSRAM_DMA_CAPABLE
+    if (!impl->rgb565_wire_buffer && impl->cfg.base.profile.use_psram) {
+        const uint64_t started_us = esp_timer_get_time();
+        lv_draw_sw_rgb565_swap((void*)source, pixels);
+        display_performance_telemetry_record_rgb565_wire_cpu(pixels, esp_timer_get_time() - started_us);
+        return (uint8_t*)source;
+    }
+#endif
+
+    if (!impl->rgb565_wire_buffer || pixels * COLOR_BYTES_RGB565 > impl->rgb565_wire_buffer_size) {
+        return NULL;
+    }
+
+#if CONFIG_SOC_PPA_SUPPORTED
+    if (!hw_resource.ppa_handle) {
+        return NULL;
+    }
     ppa_srm_oper_config_t config = {
         .in =
             {
@@ -263,9 +309,17 @@ static uint8_t* display_bridge_v9_pack_rgb565_wire(esp_lv_adapter_display_bridge
         ESP_LOGE(TAG, "PPA RGB565 panel byte packing failed: %s", esp_err_to_name(ret));
         return NULL;
     }
+#else
+    const uint64_t started_us = esp_timer_get_time();
+    uint8_t* destination = impl->rgb565_wire_buffer;
+    for (size_t index = 0; index < pixels; ++index) {
+        destination[index * 2U] = source[index * 2U + 1U];
+        destination[index * 2U + 1U] = source[index * 2U];
+    }
+    display_performance_telemetry_record_rgb565_wire_cpu(pixels, esp_timer_get_time() - started_us);
+#endif
     return impl->rgb565_wire_buffer;
 }
-#endif
 
 static uint8_t display_bridge_v9_diff_buffer_index(const esp_lv_adapter_display_bridge_v9_t* impl, const void* buffer) {
     uint8_t count = LV_MIN(impl->runtime.frame_buffer_count, (uint8_t)DISPLAY_BRIDGE_V9_DIFF_BUFFER_COUNT);
@@ -778,7 +832,9 @@ static esp_err_t display_bridge_v9_submit_double_buffer(esp_lv_adapter_display_b
 #endif
     esp_err_t ret = display_bridge_v9_blit_full_frame(impl, frame_buffer, true);
 #if CONFIG_ESP_LVGL_ADAPTER_ENABLE_PERFORMANCE_TELEMETRY
-    display_performance_telemetry_record_panel_submit((uint64_t)(esp_timer_get_time() - submit_started_us));
+    display_performance_telemetry_record_panel_submit(
+        (uint64_t)bridge_h_res(impl) * bridge_v_res(impl) * sizeof(uint16_t),
+        (uint64_t)(esp_timer_get_time() - submit_started_us));
 #endif
     if (ret != ESP_OK) {
         return ret;
@@ -1142,9 +1198,7 @@ esp_lv_adapter_display_bridge_t* esp_lv_adapter_display_bridge_v9_create(
         return NULL;
     }
 
-#if CONFIG_SOC_PPA_SUPPORTED
     (void)display_bridge_v9_init_rgb565_wire_buffer(impl);
-#endif
 
     display_bridge_v9_register_vsync(impl);
 
@@ -1173,11 +1227,9 @@ static void display_bridge_v9_destroy(esp_lv_adapter_display_bridge_t* bridge) {
     /* Clear VSync callbacks and free pipeline (owned by bridge) */
     if (impl) {
         display_bridge_v9_unregister_vsync(impl);
-#if CONFIG_SOC_PPA_SUPPORTED
         heap_caps_free(impl->rgb565_wire_buffer);
         impl->rgb565_wire_buffer = NULL;
         impl->rgb565_wire_buffer_size = 0;
-#endif
         if (impl->pipeline.elems) {
             free(impl->pipeline.elems);
             impl->pipeline.elems = NULL;
@@ -1257,9 +1309,7 @@ static esp_err_t display_bridge_v9_update_panel(esp_lv_adapter_display_bridge_t*
     display_bridge_v9_diff_reset(impl);
     display_bridge_v9_prime_double_buffers(impl);
 
-#if CONFIG_SOC_PPA_SUPPORTED
     (void)display_bridge_v9_init_rgb565_wire_buffer(impl);
-#endif
 
     /* Re-register VSYNC callbacks for new panel */
     if (cfg->base.panel) {
@@ -2198,24 +2248,15 @@ static void display_bridge_v9_flush_default(esp_lv_adapter_display_bridge_v9_t* 
 
     if (impl->cfg.base.profile.interface == ESP_LV_ADAPTER_PANEL_IF_OTHER &&
         lv_display_get_color_format(disp) == LV_COLOR_FORMAT_RGB565) {
-#if CONFIG_SOC_PPA_SUPPORTED
         uint8_t* wire_pixels =
             display_bridge_v9_pack_rgb565_wire(impl, color_map, lv_area_get_width(area), lv_area_get_height(area));
         if (wire_pixels) {
             color_map = wire_pixels;
         } else {
-            /* RGB565 byte packing is a frame hot path.  Never hide a PPA
-             * failure behind an O(width * height) software conversion. */
+            /* Byte packing is required for big-endian SPI panel streams. */
             display_manager_flush_ready(disp);
             return;
         }
-#else
-        {
-            ESP_LOGE(TAG, "RGB565 panel byte packing requires PPA");
-            display_manager_flush_ready(disp);
-            return;
-        }
-#endif
     }
 
     if (impl->cfg.draw_bitmap_cbs.custom_draw_bitmap) {
@@ -2255,24 +2296,15 @@ static void display_bridge_v9_flush_gpio_te(esp_lv_adapter_display_bridge_v9_t* 
 
     if (impl->cfg.base.profile.interface == ESP_LV_ADAPTER_PANEL_IF_OTHER &&
         lv_display_get_color_format(disp) == LV_COLOR_FORMAT_RGB565) {
-#if CONFIG_SOC_PPA_SUPPORTED
         uint8_t* wire_pixels =
             display_bridge_v9_pack_rgb565_wire(impl, color_map, lv_area_get_width(area), lv_area_get_height(area));
         if (wire_pixels) {
             color_map = wire_pixels;
         } else {
-            /* RGB565 byte packing is a frame hot path.  Never hide a PPA
-             * failure behind an O(width * height) software conversion. */
+            /* Byte packing is required for big-endian SPI panel streams. */
             display_manager_flush_ready(disp);
             return;
         }
-#else
-        {
-            ESP_LOGE(TAG, "RGB565 panel byte packing requires PPA");
-            display_manager_flush_ready(disp);
-            return;
-        }
-#endif
     }
 
     size_t flush_size = (size_t)lv_area_get_size(area) * bridge_color_bytes(impl);
