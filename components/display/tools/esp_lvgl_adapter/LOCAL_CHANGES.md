@@ -29,3 +29,21 @@ normal detach sequence. A caller-owned manual pause remains an invalid state.
 Optional `CONFIG_ESP_LVGL_ADAPTER_ENABLE_PERFORMANCE_TELEMETRY` counters expose
 aggregated RGB888 software-image, framebuffer-sync, panel-submit and VSYNC-wait
 costs. The option defaults off and adds no timing calls to production builds.
+
+On RGB888 displays the LVGL v9 PPA blend handler copies opaque RGB888 image
+blocks of at least 1024 pixels with DMA2D through the shared bridge copy handle
+instead of the CPU blend (`lvgl_ppa_accel_v9.c`, `ppa_v9_dma2d_copy_rgb888`).
+The custom-handler path already restricts the block to the source area, so the
+copy is exact for tiled images as well. Sources in flash, misaligned windows
+under flash encryption and small blocks keep the CPU path. This removes the
+~137 ns/px CPU cost of presenting a PSRAM App Surface into the framebuffer.
+
+`display_bridge_dma2d_copy_sync()` runs same-format 16/24/32-bit copies on
+bridge-owned 2D-DMA descriptors (`display_bridge_common.c`, `s_direct_copy_*`)
+instead of `esp_async_color_convert`, which writes back the whole source picture
+and writes back + invalidates the whole destination picture on every request
+(about 3 MB of cache maintenance per copy for a 720x720 RGB888 frame). The
+direct path only synchronizes the rows a block touches, the same way the PPA
+driver handles its extended windows. Format conversions, or a failed pool or
+descriptor allocation, keep using the helper. This applies to framebuffer
+dirty-area sync, flush blits and the opaque RGB888 image copy above.

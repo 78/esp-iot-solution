@@ -638,6 +638,230 @@ size_t display_bridge_get_cache_line_size(void)
 #else
 #include "esp_async_fbcpy.h"
 #endif
+
+static esp_lv_adapter_display_bridge_hw_resource_t s_hw_resource = {0};
+
+#if CONFIG_SOC_DMA2D_SUPPORTED && defined(ESP_ASYNC_COLOR_CONVERT_AVAILABLE)
+/* Direct 2D-DMA copy path (see display_bridge_dma2d_copy_sync).
+ *
+ * esp_async_color_convert writes back the *whole* source picture and writes
+ * back + invalidates the *whole* destination picture on every request. For a
+ * 720x720 RGB888 frame that is ~3 MB of cache maintenance per copy (~1-2 ms)
+ * and it evicts every other buffer from the shared L2 cache, which also slows
+ * the composing core. Same-format copies therefore run on our own descriptors
+ * and only synchronize the rows the block touches, exactly like the PPA driver
+ * does for its extended windows. Format conversions keep using the helper. */
+#include "esp_private/dma2d.h"
+#include "hal/dma2d_ll.h"
+#include "hal/dma2d_types.h"
+#include "soc/dma2d_channel.h"
+
+#define BRIDGE_DIRECT_COPY_BURST_LENGTH (128)
+
+typedef struct {
+    dma2d_pool_handle_t pool;
+    dma2d_descriptor_t *tx_desc;
+    dma2d_descriptor_t *rx_desc;
+    size_t desc_size;
+    dma2d_trans_t *trans_placeholder;
+    dma2d_trans_config_t trans_config;
+} bridge_direct_copy_t;
+
+static bridge_direct_copy_t s_direct_copy;
+
+static bool IRAM_ATTR s_direct_copy_on_rx_eof(dma2d_channel_handle_t chan, dma2d_event_data_t *event, void *user_data)
+{
+    (void)chan;
+    (void)event;
+    (void)user_data;
+    BaseType_t woken = pdFALSE;
+    xSemaphoreGiveFromISR((SemaphoreHandle_t)s_hw_resource.dma2d_done_sem, &woken);
+    return woken == pdTRUE;
+}
+
+static bool s_direct_copy_on_job_picked(uint32_t channel_count, const dma2d_trans_channel_info_t *channels,
+                                        void *user_config)
+{
+    (void)user_config;
+    dma2d_channel_handle_t tx_chan = NULL;
+    dma2d_channel_handle_t rx_chan = NULL;
+    for (uint32_t i = 0; i < channel_count; ++i) {
+        if (channels[i].dir == DMA2D_CHANNEL_DIRECTION_TX) {
+            tx_chan = channels[i].chan;
+        } else {
+            rx_chan = channels[i].chan;
+        }
+    }
+
+    dma2d_trigger_t trigger = {
+        .periph = DMA2D_TRIG_PERIPH_M2M,
+        .periph_sel_id = SOC_DMA2D_TRIG_PERIPH_M2M_TX,
+    };
+    dma2d_connect(tx_chan, &trigger);
+    trigger.periph_sel_id = SOC_DMA2D_TRIG_PERIPH_M2M_RX;
+    dma2d_connect(rx_chan, &trigger);
+
+    dma2d_transfer_ability_t ability = {
+        .desc_burst_en = true,
+        .data_burst_length = BRIDGE_DIRECT_COPY_BURST_LENGTH,
+        .access_ext_mem = true,
+        .mb_size = DMA2D_MACRO_BLOCK_SIZE_NONE,
+    };
+    dma2d_set_transfer_ability(tx_chan, &ability);
+    dma2d_set_transfer_ability(rx_chan, &ability);
+
+    dma2d_csc_config_t tx_csc = {
+        .tx_csc_option = DMA2D_CSC_TX_NONE,
+        .pre_scramble = DMA2D_SCRAMBLE_ORDER_BYTE2_1_0,
+        .post_scramble = DMA2D_SCRAMBLE_ORDER_BYTE2_1_0,
+    };
+    dma2d_csc_config_t rx_csc = {
+        .rx_csc_option = DMA2D_CSC_RX_NONE,
+        .pre_scramble = DMA2D_SCRAMBLE_ORDER_BYTE2_1_0,
+        .post_scramble = DMA2D_SCRAMBLE_ORDER_BYTE2_1_0,
+    };
+    dma2d_configure_color_space_conversion(tx_chan, &tx_csc);
+    dma2d_configure_color_space_conversion(rx_chan, &rx_csc);
+
+    dma2d_rx_event_callbacks_t callbacks = {
+        .on_recv_eof = s_direct_copy_on_rx_eof,
+    };
+    dma2d_register_rx_event_callbacks(rx_chan, &callbacks, NULL);
+
+    dma2d_set_desc_addr(rx_chan, (intptr_t)s_direct_copy.rx_desc);
+    dma2d_set_desc_addr(tx_chan, (intptr_t)s_direct_copy.tx_desc);
+    dma2d_start(rx_chan);
+    dma2d_start(tx_chan);
+    return false;
+}
+
+static void s_direct_copy_release(void)
+{
+    if (s_direct_copy.pool) {
+        dma2d_release_pool(s_direct_copy.pool);
+    }
+    heap_caps_free(s_direct_copy.tx_desc);
+    heap_caps_free(s_direct_copy.rx_desc);
+    heap_caps_free(s_direct_copy.trans_placeholder);
+    memset(&s_direct_copy, 0, sizeof(s_direct_copy));
+}
+
+/* Best effort: when anything fails the helper path stays in use. */
+static void s_direct_copy_install(void)
+{
+    size_t alignment = 0;
+    esp_cache_get_alignment(MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA, &alignment);
+    size_t desc_size = alignment > sizeof(dma2d_descriptor_t) ? alignment : sizeof(dma2d_descriptor_t);
+    if (desc_size % DMA2D_LL_DESC_ALIGNMENT) {
+        desc_size += DMA2D_LL_DESC_ALIGNMENT - desc_size % DMA2D_LL_DESC_ALIGNMENT;
+    }
+    size_t desc_alignment = alignment > DMA2D_LL_DESC_ALIGNMENT ? alignment : DMA2D_LL_DESC_ALIGNMENT;
+    s_direct_copy.desc_size = desc_size;
+    s_direct_copy.tx_desc = heap_caps_aligned_calloc(desc_alignment, 1, desc_size,
+                                                     MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA | MALLOC_CAP_8BIT);
+    s_direct_copy.rx_desc = heap_caps_aligned_calloc(desc_alignment, 1, desc_size,
+                                                     MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA | MALLOC_CAP_8BIT);
+    s_direct_copy.trans_placeholder = heap_caps_calloc(1, dma2d_get_trans_elm_size(),
+                                                       MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (!s_direct_copy.tx_desc || !s_direct_copy.rx_desc || !s_direct_copy.trans_placeholder) {
+        ESP_LOGW(TAG, "Direct DMA2D copy unavailable (no descriptor memory); using helper path");
+        s_direct_copy_release();
+        return;
+    }
+    dma2d_pool_config_t pool_config = { .pool_id = 0 };
+    if (dma2d_acquire_pool(&pool_config, &s_direct_copy.pool) != ESP_OK) {
+        ESP_LOGW(TAG, "Direct DMA2D copy unavailable (no pool); using helper path");
+        s_direct_copy.pool = NULL;
+        s_direct_copy_release();
+        return;
+    }
+    s_direct_copy.trans_config = (dma2d_trans_config_t) {
+        .tx_channel_num = 1,
+        .rx_channel_num = 1,
+        .channel_flags = DMA2D_CHANNEL_FUNCTION_FLAG_SIBLING,
+        .on_job_picked = s_direct_copy_on_job_picked,
+        .user_config = NULL,
+    };
+    ESP_LOGI(TAG, "Direct DMA2D copy with windowed cache sync enabled");
+}
+
+static void s_direct_copy_setup_desc(dma2d_descriptor_t *desc, const void *buffer, uint32_t pic_w, uint32_t pic_h,
+                                     uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t pbyte)
+{
+    memset(desc, 0, sizeof(*desc));
+    desc->owner = DMA2D_DESCRIPTOR_BUFFER_OWNER_DMA;
+    desc->suc_eof = 1;
+    desc->dma2d_en = 1;
+    desc->ha_length = pic_w;
+    desc->va_size = pic_h;
+    desc->hb_length = w;
+    desc->vb_size = h;
+    desc->x = x;
+    desc->y = y;
+    desc->pbyte = pbyte;
+    desc->mode = DMA2D_DESCRIPTOR_BLOCK_RW_MODE_SINGLE;
+    desc->buffer = (void *)buffer;
+    desc->next = NULL;
+}
+
+/* Writes back (and optionally invalidates) the rows a block touches: whole
+ * rows between the first and last touched byte, one msync per block. */
+static esp_err_t s_direct_copy_sync_rows(const void *base, size_t stride_bytes, uint32_t x, uint32_t y, uint32_t w,
+                                         uint32_t h, uint32_t bytes_per_pixel, int flags)
+{
+    if (esp_cache_get_line_size_by_addr((void *)base) == 0) {
+        return ESP_OK;
+    }
+    size_t begin = (size_t)y * stride_bytes + (size_t)x * bytes_per_pixel;
+    size_t end = (size_t)(y + h - 1) * stride_bytes + (size_t)(x + w) * bytes_per_pixel;
+    return esp_cache_msync((void *)((const uint8_t *)base + begin), end - begin,
+                           flags | ESP_CACHE_MSYNC_FLAG_UNALIGNED);
+}
+
+/* Returns ESP_ERR_NOT_SUPPORTED when the request must go through the helper. */
+static esp_err_t s_direct_copy_run(const async_color_convert_request_t *req, uint32_t timeout_ms)
+{
+    if (!s_direct_copy.pool || req->src_color_format != req->dst_color_format) {
+        return ESP_ERR_NOT_SUPPORTED;
+    }
+    uint32_t bit_depth = color_hal_pixel_format_fourcc_get_bit_depth(req->src_color_format);
+    if (bit_depth != 16 && bit_depth != 24 && bit_depth != 32) {
+        return ESP_ERR_NOT_SUPPORTED;
+    }
+    if (req->copy_width == 0 || req->copy_height == 0 ||
+            req->src_stride > DMA2D_LL_DESC_2D_FIELD_MAX || req->src_height > DMA2D_LL_DESC_2D_FIELD_MAX ||
+            req->dst_stride > DMA2D_LL_DESC_2D_FIELD_MAX || req->dst_height > DMA2D_LL_DESC_2D_FIELD_MAX ||
+            req->src_x + req->copy_width > req->src_stride || req->src_y + req->copy_height > req->src_height ||
+            req->dst_x + req->copy_width > req->dst_stride || req->dst_y + req->copy_height > req->dst_height) {
+        return ESP_ERR_NOT_SUPPORTED;
+    }
+    uint32_t bytes_per_pixel = bit_depth / 8;
+    uint32_t pbyte = dma2d_desc_pixel_format_to_pbyte_value(req->src_color_format);
+    s_direct_copy_setup_desc(s_direct_copy.tx_desc, req->src_buffer, req->src_stride, req->src_height, req->src_x,
+                             req->src_y, req->copy_width, req->copy_height, pbyte);
+    s_direct_copy_setup_desc(s_direct_copy.rx_desc, req->dst_buffer, req->dst_stride, req->dst_height, req->dst_x,
+                             req->dst_y, req->copy_width, req->copy_height, pbyte);
+    ESP_RETURN_ON_ERROR(s_direct_copy_sync_rows(req->src_buffer, (size_t)req->src_stride * bytes_per_pixel,
+                                                req->src_x, req->src_y, req->copy_width, req->copy_height,
+                                                bytes_per_pixel, ESP_CACHE_MSYNC_FLAG_DIR_C2M),
+                        TAG, "source cache sync failed");
+    ESP_RETURN_ON_ERROR(s_direct_copy_sync_rows(req->dst_buffer, (size_t)req->dst_stride * bytes_per_pixel,
+                                                req->dst_x, req->dst_y, req->copy_width, req->copy_height,
+                                                bytes_per_pixel,
+                                                ESP_CACHE_MSYNC_FLAG_DIR_C2M | ESP_CACHE_MSYNC_FLAG_INVALIDATE),
+                        TAG, "destination cache sync failed");
+    ESP_RETURN_ON_ERROR(esp_cache_msync(s_direct_copy.tx_desc, s_direct_copy.desc_size, ESP_CACHE_MSYNC_FLAG_DIR_C2M),
+                        TAG, "descriptor cache sync failed");
+    ESP_RETURN_ON_ERROR(esp_cache_msync(s_direct_copy.rx_desc, s_direct_copy.desc_size, ESP_CACHE_MSYNC_FLAG_DIR_C2M),
+                        TAG, "descriptor cache sync failed");
+    ESP_RETURN_ON_ERROR(dma2d_enqueue(s_direct_copy.pool, &s_direct_copy.trans_config, s_direct_copy.trans_placeholder),
+                        TAG, "DMA2D enqueue failed");
+    ESP_RETURN_ON_FALSE(xSemaphoreTake((SemaphoreHandle_t)s_hw_resource.dma2d_done_sem,
+                                       pdMS_TO_TICKS(timeout_ms)) == pdTRUE,
+                        ESP_ERR_TIMEOUT, TAG, "DMA2D transfer timeout");
+    return ESP_OK;
+}
+#endif /* CONFIG_SOC_DMA2D_SUPPORTED && ESP_ASYNC_COLOR_CONVERT_AVAILABLE */
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #if CONFIG_PM_POWER_DOWN_PERIPHERAL_IN_LIGHT_SLEEP
@@ -754,8 +978,8 @@ esp_err_t display_bridge_init_runtime_info(esp_lv_adapter_display_runtime_info_t
 
 #if SOC_DMA2D_SUPPORTED
 
-/* Global hardware resource - shared between v8 and v9 */
-static esp_lv_adapter_display_bridge_hw_resource_t s_hw_resource = {0};
+/* Global hardware resource - shared between v8 and v9 (defined above the
+ * direct DMA2D copy helpers, which signal its completion semaphore). */
 static bool s_hw_resource_initialized = false;
 static uint8_t s_hw_resource_ref_count = 0;
 static bool s_hw_resource_sleep_guard_active = false;
@@ -801,6 +1025,9 @@ esp_lv_adapter_display_bridge_hw_resource_t *display_bridge_get_hw_resource(void
             s_dma2d_uninstall(s_hw_resource.fbcpy_handle);
             return NULL;
         }
+#ifdef ESP_ASYNC_COLOR_CONVERT_AVAILABLE
+        s_direct_copy_install();
+#endif
 #endif
 
 #if CONFIG_SOC_PPA_SUPPORTED
@@ -875,6 +1102,9 @@ esp_err_t display_bridge_release_hw_resource(void)
 #endif
 
 #if CONFIG_SOC_DMA2D_SUPPORTED
+#ifdef ESP_ASYNC_COLOR_CONVERT_AVAILABLE
+        s_direct_copy_release();
+#endif
         if (s_hw_resource.dma2d_mutex) {
             vSemaphoreDelete((SemaphoreHandle_t)s_hw_resource.dma2d_mutex);
             s_hw_resource.dma2d_mutex = NULL;
@@ -953,6 +1183,10 @@ esp_err_t display_bridge_dma2d_copy_sync(void *trans_desc, uint32_t timeout_ms)
     xSemaphoreTake((SemaphoreHandle_t)hw->dma2d_done_sem, 0);
 
 #ifdef ESP_ASYNC_COLOR_CONVERT_AVAILABLE
+    ret = s_direct_copy_run((const async_color_convert_request_t *)trans_desc, timeout_ms);
+    if (ret != ESP_ERR_NOT_SUPPORTED) {
+        goto release_mutex;
+    }
     ret = esp_async_color_convert(hw->fbcpy_handle,
                                   (const async_color_convert_request_t *)trans_desc,
                                   display_bridge_dma2d_done_callback,

@@ -487,6 +487,73 @@ static void ppa_fill_rgb888(uint8_t *bg_buf, const lv_area_t *bg_area,
     ESP_ERROR_CHECK(ppa_do_fill(s_fill_handle, &cfg));
 }
 
+/* Below this many pixels the ~100 us DMA2D transaction overhead exceeds the
+ * CPU copy time (~137 ns/px PSRAM to PSRAM on ESP32-P4). */
+#define LVGL_PORT_DMA2D_IMAGE_MIN_PIXELS (1024U)
+
+/* Opaque RGB888 -> RGB888 block copy through the shared bridge DMA2D handle.
+ * Returns false (without touching pixels) when DMA2D cannot serve the request,
+ * so the caller can fall back to the CPU blend. */
+static bool ppa_v9_dma2d_copy_rgb888(uint8_t *dst_buf, uint32_t dst_w, uint32_t dst_h,
+                                     uint32_t dst_x, uint32_t dst_y,
+                                     const void *src_buf, uint32_t src_stride_bytes, uint32_t src_h,
+                                     uint32_t src_x, uint32_t src_y,
+                                     uint32_t copy_w, uint32_t copy_h)
+{
+#if SOC_DMA2D_SUPPORTED && defined(ESP_ASYNC_COLOR_CONVERT_AVAILABLE)
+    if ((uint64_t)copy_w * copy_h < LVGL_PORT_DMA2D_IMAGE_MIN_PIXELS) {
+        return false;
+    }
+    /* DMA2D reaches internal SRAM and PSRAM only; images in flash stay on CPU. */
+    if (!(esp_ptr_external_ram(src_buf) || esp_ptr_internal(src_buf)) ||
+            !(esp_ptr_external_ram(dst_buf) || esp_ptr_internal(dst_buf))) {
+        return false;
+    }
+    if (src_stride_bytes == 0 || (src_stride_bytes % 3) != 0) {
+        return false;
+    }
+    uint32_t src_stride_px = src_stride_bytes / 3;
+    if (src_x + copy_w > src_stride_px || src_y + copy_h > src_h ||
+            dst_x + copy_w > dst_w || dst_y + copy_h > dst_h) {
+        return false;
+    }
+    if (src_stride_px > 0x3FFFU || src_h > 0x3FFFU || dst_w > 0x3FFFU || dst_h > 0x3FFFU) {
+        return false;
+    }
+    if (!display_bridge_dma2d_window_is_compatible(src_buf, src_stride_px, src_x, copy_w, 3) ||
+            !display_bridge_dma2d_window_is_compatible(dst_buf, dst_w, dst_x, copy_w, 3)) {
+        return false;
+    }
+    if (display_bridge_peek_hw_resource() == NULL) {
+        return false;
+    }
+    async_color_convert_request_t request = {
+        .src_buffer = src_buf,
+        .dst_buffer = dst_buf,
+        .src_stride = src_stride_px,
+        .src_height = src_h,
+        .src_x = src_x,
+        .src_y = src_y,
+        .dst_stride = dst_w,
+        .dst_height = dst_h,
+        .dst_x = dst_x,
+        .dst_y = dst_y,
+        .copy_width = copy_w,
+        .copy_height = copy_h,
+        .src_color_format = ESP_COLOR_FOURCC_BGR24,
+        .dst_color_format = ESP_COLOR_FOURCC_BGR24,
+    };
+    /* The helper writes back the source picture and writes back + invalidates
+     * the destination picture, so no extra cache maintenance is needed here. */
+    return display_bridge_dma2d_copy_sync(&request, 1000) == ESP_OK;
+#else
+    (void)dst_buf; (void)dst_w; (void)dst_h; (void)dst_x; (void)dst_y;
+    (void)src_buf; (void)src_stride_bytes; (void)src_h; (void)src_x; (void)src_y;
+    (void)copy_w; (void)copy_h;
+    return false;
+#endif
+}
+
 /* Software fallback for RGB888 destination. */
 static void lv_draw_ppa_v9_sw_fallback_rgb888(lv_draw_task_t *t, const lv_draw_sw_blend_dsc_t *dsc)
 {
@@ -681,13 +748,27 @@ static void lv_draw_ppa_v9_handler_rgb888(lv_draw_task_t *t, const lv_draw_sw_bl
             return;
         }
 
-        /* Opaque RGB565/RGB888 images can include tiled image draws. The SW
-         * custom blend descriptor does not expose the original image draw flags,
-         * so keep this path on CPU instead of using PPA SRM with incomplete
+        /* Opaque RGB888 source: the block is already guarded to lie inside
+         * src_area, so a plain 2D memory copy is exact regardless of image
+         * tiling. DMA2D reads/writes PSRAM at ~22 ns/px versus ~137 ns/px for
+         * the CPU blend; the transaction has a ~100 us fixed cost, hence the
+         * pixel threshold. */
+        if (dsc->opa >= LV_OPA_MAX && dsc->src_color_format == LV_COLOR_FORMAT_RGB888) {
+            uint32_t src_stride_bytes = dsc->src_stride ? dsc->src_stride : (img_w * 3);
+            if (ppa_v9_dma2d_copy_rgb888(bg_buf, bg_w, bg_h, bg_off_x, bg_off_y,
+                                         dsc->src_buf, src_stride_bytes, img_h, off_x, off_y,
+                                         block_w, block_h)) {
+                return;
+            }
+            lv_draw_ppa_v9_sw_fallback_rgb888(t, dsc);
+            return;
+        }
+
+        /* Opaque RGB565 images can include tiled image draws. The SW custom
+         * blend descriptor does not expose the original image draw flags, so
+         * keep this path on CPU instead of using PPA SRM with incomplete
          * source-coordinate context. */
-        if (dsc->opa >= LV_OPA_MAX &&
-                (dsc->src_color_format == LV_COLOR_FORMAT_RGB565 ||
-                 dsc->src_color_format == LV_COLOR_FORMAT_RGB888)) {
+        if (dsc->opa >= LV_OPA_MAX && dsc->src_color_format == LV_COLOR_FORMAT_RGB565) {
             lv_draw_ppa_v9_sw_fallback_rgb888(t, dsc);
             return;
         }
