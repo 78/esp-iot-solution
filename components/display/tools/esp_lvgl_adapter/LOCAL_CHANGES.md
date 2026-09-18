@@ -47,3 +47,12 @@ direct path only synchronizes the rows a block touches, the same way the PPA
 driver handles its extended windows. Format conversions, or a failed pool or
 descriptor allocation, keep using the helper. This applies to framebuffer
 dirty-area sync, flush blits and the opaque RGB888 image copy above.
+
+LVGL 9.6 compatibility: `display_manager_calc_draw_buf_bytes()` rounds every
+adapter-allocated draw buffer up to `LV_DRAW_BUF_ALIGN`. LVGL 9.6 rounds the
+size `lv_draw_buf_reshape()` requires up to that alignment while
+`lv_refr` still derives the row budget from `data_size / stride`, so a buffer
+of exactly `rows * stride` bytes (for example the one-row dummy-draw redirect
+buffer) failed the reshape assert once a refresh used every row. The public
+LVGL headers are included through `lvgl.h` instead of the deprecated `src/`
+paths.

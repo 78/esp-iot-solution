@@ -21,15 +21,13 @@
 #include "src/draw/sw/blend/lv_draw_sw_blend_private.h"
 #include "src/draw/sw/blend/lv_draw_sw_blend_to_rgb565.h"
 #include "src/draw/sw/blend/lv_draw_sw_blend_to_rgb888.h"
-#include "src/draw/lv_draw.h"
-#include "src/draw/lv_draw_buf.h"
+/* lv_draw.h, lv_draw_buf.h, lv_mem.h and lv_color.h are public headers that
+ * lvgl.h already provides; LVGL 9.6 warns when they are included from src/. */
 #include "driver/ppa.h"
 #include "esp_cache.h"
 #include "esp_private/esp_cache_private.h"
 #include "esp_memory_utils.h"
 #include "common/display_bridge_common.h"
-#include "stdlib/lv_mem.h"
-#include "misc/lv_color.h"
 
 static ppa_client_handle_t s_blend_handle = NULL;
 static ppa_client_handle_t s_fill_handle = NULL;

@@ -1408,7 +1408,15 @@ static size_t display_manager_calc_draw_buf_bytes(const esp_lv_adapter_display_p
     }
 
     size_t bpp = lv_color_format_get_bpp(color_format);
-    return (draw_buf_pixels * bpp + 7U) / 8U;
+    size_t bytes = (draw_buf_pixels * bpp + 7U) / 8U;
+#if LVGL_VERSION_MAJOR >= 9 && defined(LV_DRAW_BUF_ALIGN) && LV_DRAW_BUF_ALIGN > 1
+    /* LVGL 9.6 rounds the size a reshaped layer needs up to LV_DRAW_BUF_ALIGN
+     * while it still derives the row budget from data_size / stride. A buffer
+     * that is exactly rows * stride bytes therefore fails the reshape assert
+     * once the refresh uses every row. Round the allocation up so both agree. */
+    bytes = display_manager_align_up(bytes, LV_DRAW_BUF_ALIGN);
+#endif
+    return bytes;
 }
 
 static bool display_manager_prepare_buffers(esp_lv_adapter_display_node_t *node,
